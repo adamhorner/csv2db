@@ -1,0 +1,7 @@
+{
+    "extend": "test-config-with-scripting.json",
+    "connectionProperties": {
+        "password": "secret",
+        "custom": { "function": "connectionProperty" }
+    }
+}

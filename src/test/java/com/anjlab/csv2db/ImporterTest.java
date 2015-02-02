@@ -1,11 +1,5 @@
 package com.anjlab.csv2db;
 
-import com.anjlab.csv2db.Configuration.CSVOptions;
-import com.anjlab.csv2db.Configuration.OperationMode;
-import junit.framework.Assert;
-import org.apache.commons.lang3.StringUtils;
-import org.junit.Test;
-
 import java.sql.Connection;
 import java.sql.Date;
 import java.sql.ResultSet;
@@ -15,62 +9,16 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+
+import org.apache.commons.lang3.StringUtils;
+import org.junit.Assert;
+import org.junit.Test;
+
+import com.anjlab.csv2db.Configuration.OperationMode;
 
 public class ImporterTest
 {
-    @Test
-    public void createTestConfig() throws Exception
-    {
-        Configuration config = new Configuration();
-
-        config.setForceUpdate(true);
-
-        Map<Integer, String> columnMappings = new HashMap<Integer, String>();
-        columnMappings.put(0, "company_name");
-        columnMappings.put(1, "company_number");
-        columnMappings.put(4, "address_line_1");
-        columnMappings.put(5, "address_line_2");
-        columnMappings.put(12, "country_of_origin");
-
-        config.setColumnMappings(columnMappings);
-
-        config.setTransientColumns(Arrays.asList("country_of_origin"));
-
-        Map<String, String> connectionProperties = new HashMap<String, String>();
-        connectionProperties.put("username", "sa");
-        connectionProperties.put("password", "");
-
-        config.setConnectionProperties(connectionProperties);
-
-        config.setConnectionUrl("jdbc:derby:memory:myDB;create=true");
-        config.setDriverClass("org.apache.derby.jdbc.EmbeddedDriver");
-
-        CSVOptions csvOptions = new CSVOptions();
-        csvOptions.setSkipLines(1);
-        csvOptions.setEscapeChar('\b');
-        config.setCsvOptions(csvOptions);
-        config.setOperationMode(OperationMode.MERGE);
-        config.setPrimaryKeys(Arrays.asList("company_number"));
-        config.setTargetTable("companies_house_records");
-
-        Map<String, ValueDefinition> insertValues = new HashMap<String, ValueDefinition>();
-        insertValues.put("id", new SqlLiteral("current_timestamp"));
-        config.setInsertValues(insertValues);
-
-        Map<String, ValueDefinition> updateValues = new HashMap<String, ValueDefinition>();
-        updateValues.put("updated_at", new SqlLiteral("current_date"));
-        config.setUpdateValues(updateValues);
-
-        String expectedJson = config.toJson();
-
-        String actualJson = Configuration.fromJson("src/test/resources/test-config.json").toJson();
-
-        Assert.assertEquals(expectedJson, actualJson);
-    }
-
     @Test
     public void testImport() throws Exception
     {
@@ -79,7 +27,7 @@ public class ImporterTest
 
         config.getCsvOptions().setEscapeChar((char) 0);
 
-        Importer importer = new Importer(config, 1, new SimpleFileResolver("src/test/resources"));
+        Importer importer = new Importer(config, 1);
 
         Connection connection = importer.createConnection();
 
@@ -109,7 +57,7 @@ public class ImporterTest
         config.setOperationMode(OperationMode.INSERT);
         config.setBatchSize(3);
 
-        importer = new Importer(config, 1, new SimpleFileResolver("src/test/resources"));
+        importer = new Importer(config, 1);
 
         connection = importer.createConnection();
 
@@ -128,6 +76,32 @@ public class ImporterTest
         expectedDataset.addAll(getExpectedDataset(false));
         sortDatasetByCompanyNameAndUpdateDate(expectedDataset);
         assertRecordCount(connection, expectedDataset, true);
+
+        // Test InsertOnly
+
+        connection.close();
+
+        config.setOperationMode(OperationMode.INSERTONLY);
+        config.setBatchSize(3);
+
+        importer = new Importer(config, 1);
+
+        connection = importer.createConnection();
+
+        importer.performImport("src/test/resources/test-data.csv");
+
+        assertRecordCount(connection, expectedDataset, true);
+
+        connection.createStatement()
+                .executeUpdate("delete from companies_house_records");
+
+        config.setIgnoreNullPK(true);
+
+        importer.performImport("src/test/resources/test-data.csv");
+
+        // For the first time the data will be inserted, we don't insert any values to updated_at in
+        // this test case
+        assertRecordCount(connection, getExpectedDataset(false), true);
     }
 
     @Test
@@ -138,7 +112,7 @@ public class ImporterTest
 
         config.getCsvOptions().setEscapeChar((char) 0);
 
-        Importer importer = new Importer(config, 4, new SimpleFileResolver("src/test/resources"));
+        Importer importer = new Importer(config, 4);
 
         Connection connection = importer.createConnection();
 
@@ -171,7 +145,7 @@ public class ImporterTest
         config.setOperationMode(OperationMode.INSERT);
         config.setBatchSize(3);
 
-        importer = new Importer(config, 4, new SimpleFileResolver("src/test/resources"));
+        importer = new Importer(config, 4);
 
         connection = importer.createConnection();
 
@@ -260,19 +234,12 @@ public class ImporterTest
 
         config.getCsvOptions().setEscapeChar((char) 0);
 
-        Importer importer = new Importer(config, 1, new SimpleFileResolver("src/test/resources"));
+        Importer importer = new Importer(config, 1);
 
         Connection connection = importer.createConnection();
 
-        try
-        {
-            connection.createStatement()
-                    .executeUpdate("drop table companies_house_records");
-        }
-        catch (SQLException e)
-        {
-            //  Ignore
-        }
+        connection.createStatement()
+                .executeUpdate("drop table companies_house_records");
 
         connection.createStatement()
                 .executeUpdate(

@@ -3,10 +3,18 @@ package com.anjlab.csv2db;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+
+import javax.script.ScriptEngine;
+import javax.script.ScriptEngineManager;
+import javax.script.ScriptException;
 
 import org.apache.commons.io.input.AutoCloseInputStream;
 
@@ -15,11 +23,23 @@ import au.com.bytecode.opencsv.CSVReader;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 public class Configuration
 {
 
     private static final int DEFAULT_BATCH_SIZE = 100;
+
+    private static final Gson gson = createGson();
+
+    private static Gson createGson()
+    {
+        GsonBuilder gsonBuilder = new GsonBuilder();
+        gsonBuilder.registerTypeAdapter(ValueDefinition.class, new ValueDefinitionAdapter());
+        return gsonBuilder.create();
+    }
 
     public enum OperationMode
     {
@@ -99,7 +119,7 @@ public class Configuration
     private OperationMode operationMode;
     private String driverClass;
     private String connectionUrl;
-    private Map<String, String> connectionProperties;
+    private Map<String, ValueDefinition> connectionProperties;
     private String targetTable;
     private List<String> primaryKeys;
     /**
@@ -117,18 +137,73 @@ public class Configuration
     private boolean forceUpdate;
     private boolean ignoreNullPK;
 
+    private transient FileResolver fileResolver;
+    private transient ScriptEngine scriptEngine;
+
     public static Configuration fromJson(String filename) throws FileNotFoundException
     {
-        return fromJson(new AutoCloseInputStream(new FileInputStream(new File(filename))));
+        FileResolver resolverRelativeToParentFolder =
+                new SimpleFileResolver(new File(filename).getParentFile());
+
+        return fromJson(new AutoCloseInputStream(new FileInputStream(new File(filename))),
+                resolverRelativeToParentFolder);
     }
 
-    public static Configuration fromJson(InputStream input)
+    public static Configuration fromJson(InputStream input, FileResolver fileResolver) throws FileNotFoundException
     {
-        Configuration config = createGson().fromJson(new InputStreamReader(input), Configuration.class);
+        Configuration config = gson.fromJson(
+                readConfig(input, fileResolver), Configuration.class);
 
         if (config.getCsvOptions() == null)
         {
             config.setCsvOptions(new CSVOptions());
+        }
+
+        config.setFileResolver(fileResolver);
+
+        return config;
+    }
+
+    private static JsonElement readConfig(InputStream input, FileResolver fileResolver) throws FileNotFoundException
+    {
+        JsonObject config = (JsonObject) new JsonParser().parse(new InputStreamReader(input));
+
+        if (config.has("extend"))
+        {
+            String parentFilename = config.get("extend").getAsString();
+
+            JsonElement parentConfig = readConfig(
+                    new AutoCloseInputStream(new FileInputStream(fileResolver.getFile(parentFilename))),
+                    fileResolver);
+
+            return extend(config, parentConfig);
+        }
+
+        return config;
+    }
+
+    private static JsonElement extend(JsonElement configElement, JsonElement parentConfigElement)
+    {
+        if (!configElement.isJsonObject() || !parentConfigElement.isJsonObject())
+        {
+            return configElement;
+        }
+
+        final JsonObject config = configElement.getAsJsonObject();
+        final JsonObject parentConfig = parentConfigElement.getAsJsonObject();
+
+        for (Entry<String, JsonElement> entry : parentConfig.entrySet())
+        {
+            if (!config.has(entry.getKey()))
+            {
+                // Copy entire member from parent
+                config.add(entry.getKey(), entry.getValue());
+            }
+            else
+            {
+                // Same property declared, but maybe some children don't have overrides?
+                extend(config.get(entry.getKey()), entry.getValue());
+            }
         }
 
         return config;
@@ -136,14 +211,7 @@ public class Configuration
 
     public String toJson()
     {
-        return createGson().toJson(this);
-    }
-
-    private static Gson createGson()
-    {
-        GsonBuilder gsonBuilder = new GsonBuilder();
-        gsonBuilder.registerTypeAdapter(ValueDefinition.class, new ValueDefinitionAdapter());
-        return gsonBuilder.create();
+        return gson.toJson(this);
     }
 
     public String getDriverClass()
@@ -206,12 +274,39 @@ public class Configuration
         this.primaryKeys = primaryKeys;
     }
 
-    public Map<String, String> getConnectionProperties()
+    public Map<String, String> getConnectionProperties() throws ConfigurationException
     {
-        return connectionProperties;
+        Map<String, String> properties = new HashMap<String, String>();
+        for (Entry<String, ValueDefinition> entry : connectionProperties.entrySet())
+        {
+            try
+            {
+                ValueDefinition value = entry.getValue();
+
+                if (value.producesSQL())
+                {
+                    throw new ConfigurationException(
+                            "Connection property '" + entry.getKey() + "' produces SQL which is not supported."
+                                    + "Only primitive types and function references allowed here.");
+                }
+
+                properties.put(
+                        entry.getKey(),
+                        String.valueOf(
+                                value.eval(
+                                        entry.getKey(),
+                                        new HashMap<String, String>(),
+                                        getScriptEngine())));
+            }
+            catch (ScriptException e)
+            {
+                throw new RuntimeException("Error evaluating connection properties", e);
+            }
+        }
+        return properties;
     }
 
-    public void setConnectionProperties(Map<String, String> connectionProperties)
+    public void setConnectionProperties(Map<String, ValueDefinition> connectionProperties)
     {
         this.connectionProperties = connectionProperties;
     }
@@ -304,5 +399,54 @@ public class Configuration
     public void setIgnoreNullPK(boolean ignoreNullPK)
     {
         this.ignoreNullPK = ignoreNullPK;
+    }
+
+    public FileResolver getFileResolver()
+    {
+        return fileResolver;
+    }
+
+    public void setFileResolver(FileResolver fileResolver)
+    {
+        this.fileResolver = fileResolver;
+    }
+
+    public ScriptEngine getScriptEngine()
+    {
+        if (scriptEngine == null)
+        {
+            try
+            {
+                scriptEngine = newScriptEngine();
+            }
+            catch (ScriptException | IOException e)
+            {
+                throw new RuntimeException("Error loading scripting engine", e);
+            }
+        }
+        return scriptEngine;
+    }
+
+    private ScriptEngine newScriptEngine() throws FileNotFoundException,
+            ScriptException, IOException
+    {
+        ScriptEngine scriptEngine = new ScriptEngineManager().getEngineByName("JavaScript");
+
+        if (getScripting() != null)
+        {
+            for (String filename : getScripting())
+            {
+                FileReader scriptReader = new FileReader(fileResolver.getFile(filename));
+                try
+                {
+                    scriptEngine.eval(scriptReader);
+                }
+                finally
+                {
+                    scriptReader.close();
+                }
+            }
+        }
+        return scriptEngine;
     }
 }
