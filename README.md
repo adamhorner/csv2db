@@ -6,9 +6,13 @@ Java Runtime
 ## How to Build
 
 ``` bash
+git clone https://github.com/anjlab/csv2db.git csv2db
+
+cd csv2db
+
 chmod +x gradlew
 
-./gradlew clean build
+./gradlew build
 ```
 
 ## How to Use
@@ -20,10 +24,35 @@ chmod +x ./build/libs/run.sh
 
 usage: ./run.sh
  -c,--config <arg>            Configuration file
+ -d,--driverClass             JDBC driver class name
  -h,--help                    Prints this help
  -i,--input <arg>             Input CSV file
+ -l,--connectionUrl           JDBC connection URL
+ -m,--mode                    Operation mode (INSERT, MERGE, INSERTONLY)
+ -p,--password                Connection password
  -t,--numberOfThreads <arg>   Number of threads
+ -u,--username                Connection username
 ```
+
+Command line options take precedence over values from config file.
+
+### Pick right database driver
+
+This distribution shipped with latest PostgreSQL 9.x JDBC driver.
+
+If you need to connect to different RDBMS try either:
+
+  * (re)build `csv2db` with `-PjdbcDriver=<groupId:artifactId:version>` key.
+ 
+    For example, to get latest 5.x MySQL Connector/J driver run build with:
+
+  ```
+./gradlew -PjdbcDriver=mysql:mysql-connector-java:5+ build
+```
+
+  * or manually put JDBC driver to `./build/libs/lib`.
+
+You can find names of JDBC drivers in [Maven Central](http://search.maven.org).
 
 ### Example
 
@@ -77,6 +106,9 @@ CompanyName, CompanyNumber,RegAddress.CareOf,RegAddress.POBox,RegAddress.Address
         "post_code": { "function": "uppercase" },
         "address_line_2" : { "function": "transformAddressLine2" }
     },
+    "map": {
+        "function": "filterRows"
+    },
     "scripting": [
         "functions.js"
     ],
@@ -99,6 +131,16 @@ CompanyName, CompanyNumber,RegAddress.CareOf,RegAddress.POBox,RegAddress.Address
 
 importPackage(org.apache.commons.lang3);
 
+//  Map function accepts two arguments:
+//  - `row` from CSV file containing only values according to `columnMappings`
+//  - `emit` is a callback function that accepts new value of `row` that will
+//    be used instead of original value
+function filterRows(row, emit) {
+    if (row["companies_house_id"]) {
+        emit(row)
+    }
+}
+
 //  For functions used in connection properties
 //  first argument is the name of evaluating connection property
 function connectionUsername(propertyName) {
@@ -114,11 +156,6 @@ function uppercase(columnName, row) {
     return row[columnName].toUpperCase()
 }
 ```
-
-### Usage notes
-
- * Target table in database should exists.
- * PostgreSQL JDBC driver shipped with this distribution. If you want to connect to another RDBMS you have to put its JDBC driver to ```./build/libs/lib```.
 
 ### Format of config file
 
@@ -153,6 +190,8 @@ but these columns won't be mapped to target table columns.
 `insertValues` and `updateValues` allows providing values for columns that are not in CSV (like in example above with required `id` field, whose value should be taken from PostgreSQL sequence). `insertValues` used in INSERT clauses, `updateValues` used in UPDATE clauses. See <a href="#value-definitions">Value Definitions</a>.
 
 `transform` defines transformation rules for imported data. Right now you can define only one transformation for each column. See <a href="#value-definitions">Value Definitions</a>. Transformations only applied for CSV data and not for the columns defined in `insertValues` and `updateValues`
+
+`map` (optional) defines name of a <a href="#value-definitions">JavaScript function</a>. Every row from input CSV file will be passed through this function. The `map` function must accept two arguments: `row` and `emit`. The value of `row` will be JSON object containing key/values according to `columnMappings`. `emit` is a callback function that accepts new value of `row` that will be used instead of original value in further processing. Client code may invoke `emit` function 0, 1, or many times, acting like a filter or a splitter.
 
 `scripting` defines list of JavaScript file names. The file names are relative to location of the configuration file. You can define your JavaScript functions in these files and reference them from <a href="#value-definitions">Value Definitions</a>.
 
