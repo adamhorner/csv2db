@@ -2,7 +2,7 @@ allprojects {
     apply plugin: 'eclipse'
 
     group = 'com.anjlab'
-    version = '2.2.1'
+    version = '3.0.0'
 }
 
 import org.gradle.plugins.ide.eclipse.model.*;
@@ -10,14 +10,19 @@ import org.gradle.plugins.ide.eclipse.model.*;
 apply plugin: 'java'
 apply plugin: 'maven'
 
-sourceCompatibility = 1.7
-targetCompatibility = 1.7
+def javaVersion = org.gradle.internal.jvm.Jvm.current().javaVersion
+
+sourceCompatibility = javaVersion.java8Compatible ? javaVersion.name : 1.7
+targetCompatibility = sourceCompatibility
+
+println "Builing for Java ${targetCompatibility}"
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
 
 dependencies {
     testCompile 'junit:junit:4.8.2'
     testCompile 'org.apache.derby:derby:10.9.1.0'
+    testCompile 'org.postgresql:postgresql:9.+'
     
     compile 'net.sf.opencsv:opencsv:2.3'
     compile 'commons-cli:commons-cli:1.2'
