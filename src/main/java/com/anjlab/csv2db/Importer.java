@@ -75,6 +75,7 @@ public class Importer
         }
         else
         {
+            System.out.println("Importing from " + inputFile.getName() + "...");
             performImport(new AutoCloseInputStream(new FileInputStream(inputFile)));
         }
     }
@@ -87,6 +88,7 @@ public class Importer
         {
             if (file.isFile() && filenameFilter.accept(null, file.getName()))
             {
+                System.out.println("Importing from " + file.getName() + "...");
                 performImport(new AutoCloseInputStream(new FileInputStream(file)));
             }
         }
@@ -106,6 +108,7 @@ public class Importer
 
                 if (!entry.isDirectory() && filenameFilter.accept(null, entry.getName()))
                 {
+                    System.out.println("Importing from " + entry.getName() + "...");
                     performImport(zipFile.getInputStream(entry));
                 }
             }
@@ -125,39 +128,35 @@ public class Importer
         {
             final RecordHandler strategy = getRecordHandlerStrategy(createConnection(), config.getScriptEngine());
 
+            // The map function accepts nameValues and the JavaScript emit callback function.
+            // The emit function should call back to Java, but since we can't create pure Java
+            // object representing JavaScript function we create this bridge that will in turn
+            // do the actual call to Java using the #handleRecord(...) interface method
+            final Object emitFunction;
+            {
+                String threadLocalEmit = "emit" + i;
+                String threadLocalStrategy = "strategy" + i;
+
+                StringBuilder emitFunctionDeclaration = new StringBuilder()
+                        .append("function ").append(threadLocalEmit).append("(nameValues) {")
+                        .append(threadLocalStrategy).append(".handleRecord(nameValues);")
+                        .append("}");
+
+                try
+                {
+                    config.getScriptEngine().getContext().setAttribute(
+                            threadLocalStrategy, strategy, ScriptContext.ENGINE_SCOPE);
+
+                    emitFunction = config.getScriptEngine().eval(emitFunctionDeclaration.toString());
+                }
+                catch (ScriptException e)
+                {
+                    throw new RuntimeException("Internal error", e);
+                }
+            }
+
             executorService.submit(new Runnable()
             {
-                //  The map function accepts nameValues and the JavaScript emit callback function.
-                //  The emit function should call back to Java, but since we can't create pure Java
-                //  object representing JavaScript function we create this bridge that will in turn
-                //  do the actual call to Java using the #handleRecord(...) interface method
-                private final ThreadLocal<Object> emitFunction = new ThreadLocal<Object>()
-                {
-                    @Override
-                    protected Object initialValue()
-                    {
-                        String threadLocalEmit = "emit" + Thread.currentThread().hashCode();
-                        String threadLocalStrategy = "strategy" + Thread.currentThread().hashCode();
-
-                        StringBuilder emitFunction = new StringBuilder()
-                            .append("function ").append(threadLocalEmit).append("(nameValues) {")
-                            .append(threadLocalStrategy).append(".handleRecord(nameValues);")
-                            .append("}");
-
-                        try
-                        {
-                            config.getScriptEngine().getContext().setAttribute(
-                                    threadLocalStrategy, strategy, ScriptContext.ENGINE_SCOPE);
-
-                            return config.getScriptEngine().eval(emitFunction.toString());
-                        }
-                        catch (ScriptException e)
-                        {
-                            throw new RuntimeException("Internal error", e);
-                        }
-                    }
-                };
-
                 @Override
                 public void run()
                 {
@@ -183,32 +182,32 @@ public class Importer
                             }
                             else
                             {
-                                //  Note that all emitted values (if any)
-                                //  will be handled by this same thread
+                                // Note that all emitted values (if any)
+                                // will be handled by this same thread
                                 config.getMap().eval(
                                         config.getScriptEngine(),
                                         nameValues,
-                                        emitFunction.get());
+                                        emitFunction);
                             }
 
                             nextLine = queue.take();
                         }
                         queue.put(new String[] { terminalMessage });
                     }
-                    catch (BatchUpdateException bue)
+                    catch (Throwable t)
                     {
-                        bue.printStackTrace(System.err);
-                        SQLException se = bue.getNextException();
-                        while (se != null)
+                        if (t instanceof BatchUpdateException)
                         {
-                            System.err.println("Next SQLException in chain:");
-                            se.printStackTrace(System.err);
-                            se = se.getNextException();
+                            printBatchUpdateException((BatchUpdateException) t);
                         }
-                    }
-                    catch (Throwable e)
-                    {
-                        e.printStackTrace(System.err);
+                        else if (t.getCause() instanceof BatchUpdateException)
+                        {
+                            printBatchUpdateException((BatchUpdateException) t.getCause());
+                        }
+                        else
+                        {
+                            t.printStackTrace(System.err);
+                        }
                     }
                     finally
                     {
@@ -220,6 +219,18 @@ public class Importer
                         {
                             throw new RuntimeException("Problem has occurred while closing resources.", e);
                         }
+                    }
+                }
+
+                private void printBatchUpdateException(BatchUpdateException bue)
+                {
+                    bue.printStackTrace(System.err);
+                    SQLException se = bue.getNextException();
+                    while (se != null)
+                    {
+                        System.err.println("Next SQLException in chain:");
+                        se.printStackTrace(System.err);
+                        se = se.getNextException();
                     }
                 }
             });

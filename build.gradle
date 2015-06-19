@@ -2,7 +2,7 @@ allprojects {
     apply plugin: 'eclipse'
 
     group = 'com.anjlab'
-    version = '3.0.0'
+    version = '3.0.3'
 }
 
 import org.gradle.plugins.ide.eclipse.model.*;
@@ -15,7 +15,7 @@ def javaVersion = org.gradle.internal.jvm.Jvm.current().javaVersion
 sourceCompatibility = javaVersion.java8Compatible ? javaVersion.name : 1.7
 targetCompatibility = sourceCompatibility
 
-println "Builing for Java ${targetCompatibility}"
+println "Building for Java ${targetCompatibility}"
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
 
